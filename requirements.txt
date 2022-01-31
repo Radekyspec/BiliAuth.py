@@ -1,0 +1,2 @@
+aiohttp==3.8.1
+pycryptodome==3.14.0
