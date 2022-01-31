@@ -1,5 +1,4 @@
 import aiohttp
-import asyncio
 import base64
 import hashlib
 import json
@@ -157,10 +156,3 @@ class BiliAuth:
             return keys_lib
         else:
             return keys_lib
-
-
-if __name__ == '__main__':
-    BiliAuth.set(15078863008, "HELLOaaa20031227")
-    auth = BiliAuth()
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(auth.acquire())
