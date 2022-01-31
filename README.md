@@ -3,6 +3,7 @@
 
 ## 使用方法
 #### 1. 安装依赖
+* Python >= 3.6
 `
 pip install -r requirements.txt
 `
