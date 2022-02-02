@@ -122,7 +122,7 @@ class BiliAuth:
             cookie_info = after_login["data"]["cookie_info"]["cookies"]
             cookies = ""
             for cookie in cookie_info:
-                cookies = cookie["name"] + "=" + cookie["value"] + "; "
+                cookies += cookie["name"] + "=" + cookie["value"] + "; "
             cookies = cookies[:-2]
             keys_lib = {
                 "code": 0,
