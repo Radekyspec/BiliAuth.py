@@ -1,4 +1,5 @@
 import aiohttp
+import asyncio
 import base64
 import hashlib
 import json
@@ -11,10 +12,14 @@ from typing import Optional
 
 
 class BiliAuth:
-    @classmethod
-    def set(cls, username, password):
-        cls.username = username
-        cls.password = password
+    def __init__(self):
+        self.username = None
+        self.password = None
+        self.buvid = None
+
+    def set(self, username, password):
+        self.username = username
+        self.password = password
 
     async def post(self, url: str, headers: Optional[dict] = None, payload: Optional[dict] = None):
         async with aiohttp.ClientSession(headers=headers) as session:
@@ -65,7 +70,7 @@ class BiliAuth:
             "access_key": "",
             "actionKey": "appkey",
             "appkey": "783bbb7264451d82",
-            "build": "6550400",
+            "build": "6590300",
             "channel": "bili",
             "device": "phone",
             "mobi_app": "android",
@@ -89,16 +94,17 @@ class BiliAuth:
         return sign
 
     async def account_login(self):
+        self.buvid = self.fake_buvid()
         url = "https://passport.bilibili.com/x/passport-login/oauth2/login"
         headers = {
             "env": "prod",
             "APP-KEY": "android",
-            "Buvid": self.fake_buvid(),
+            "Buvid": self.buvid,
             "Accept": "*/*",
             "Accept-Encoding": "gzip",
             "Accept-Language": "zh-cn",
             "Connection": "keep-alive",
-            "User-Agent": "Mozilla/5.0 BiliDroid/6.55.0 (bbcalllen@gmail.com) os/android model/MuMu mobi_app/android build/6550400 channel/bili innerVer/6550400 osVer/7.1.2 network/2",
+            "User-Agent": "Mozilla/5.0 BiliDroid/6.59.0 (bbcalllen@gmail.com) os/android model/MuMu mobi_app/android build/6590300 channel/bili innerVer/6590300 osVer/7.1.2 network/2",
         }
         payload = {
             "captcha": "",
@@ -127,8 +133,8 @@ class BiliAuth:
             keys_lib = {
                 "code": 0,
                 "message": "",
-                "access_key": after_login["data"]["token_info"]["access_token"],
-                "refresh_key": after_login["data"]["token_info"]["refresh_token"],
+                "access_token": after_login["data"]["token_info"]["access_token"],
+                "refresh_token": after_login["data"]["token_info"]["refresh_token"],
                 "cookies": cookies
             }
             return keys_lib
@@ -148,11 +154,79 @@ class BiliAuth:
             }
             return keys_lib
 
-    async def acquire(self, is_print=True):
+    async def acquire(self, is_print=False, fallback_sms=False) -> dict:
         after_login = await self.account_login()
+        keys_lib = self.reformat_keys(after_login)
+        if fallback_sms and str(keys_lib["code"]) != "0":
+            keys_lib = self.reformat_keys(await self.login_sms())
+        if is_print:
+            print(keys_lib)
+        return keys_lib
+
+    async def acquire_by_sms(self, is_print=False) -> dict:
+        after_login = await self.login_sms()
         keys_lib = self.reformat_keys(after_login)
         if is_print:
             print(keys_lib)
-            return keys_lib
-        else:
-            return keys_lib
+        return keys_lib
+
+    async def login_sms(self, is_print=False):
+        raw_payload = await self.send_sms()
+        url = "https://passport.bilibili.com/x/passport-login/login/sms"
+        headers = {
+            "env": "prod",
+            "APP-KEY": "android",
+            "Buvid": self.buvid,
+            "Accept": "*/*",
+            "Accept-Encoding": "gzip",
+            "Accept-Language": "zh-cn",
+            "Connection": "keep-alive",
+            "User-Agent": "Mozilla/5.0 BiliDroid/6.59.0 (bbcalllen@gmail.com) os/android model/MuMu mobi_app/android build/6590300 channel/bili innerVer/6590300 osVer/7.1.2 network/2",
+        }
+        payload = {
+            "captcha_key": raw_payload["captcha_key"],
+            "cid": raw_payload["cid"],
+            "tel": raw_payload["tel"],
+            "statistics": raw_payload["statistics"],
+            "code": input("请输入收到的短信验证码: "),
+        }
+        payload = self.payload_sign(payload)
+        sign = self.app_sign(payload)
+        payload.update({"sign": sign})
+        resp = await self.post(url, headers, payload)
+        if is_print:
+            print(resp)
+        return resp
+
+    async def send_sms(self):
+        if self.buvid is None:
+            self.buvid = self.fake_buvid()
+        url = "https://passport.bilibili.com//x/passport-login/sms/send"
+        headers = {
+            "env": "prod",
+            "APP-KEY": "android",
+            "Buvid": self.buvid,
+            "Accept": "*/*",
+            "Accept-Encoding": "gzip",
+            "Accept-Language": "zh-cn",
+            "Connection": "keep-alive",
+            "User-Agent": "Mozilla/5.0 BiliDroid/6.59.0 (bbcalllen@gmail.com) os/android model/MuMu mobi_app/android build/6590300 channel/bili innerVer/6590300 osVer/7.1.2 network/2",
+        }
+        payload = {
+            "cid": "86",
+            "tel": self.username,
+            "statistics": '{"appId":1,"platform":3,"version":"6.32.0","abtest":""}'
+        }
+        payload = self.payload_sign(payload)
+        sign = self.app_sign(payload)
+        payload.update({"sign": sign})
+        resp = await self.post(url, headers, payload)
+        payload["captcha_key"] = resp["data"]["captcha_key"]
+        return payload
+
+
+if __name__ == '__main__':
+    auth = BiliAuth()
+    auth.set("username", "password")
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(auth.acquire_by_sms(True))
