@@ -229,4 +229,4 @@ if __name__ == '__main__':
     auth = BiliAuth()
     auth.set("username", "password")
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(auth.acquire_by_sms(True))
+    loop.run_until_complete(auth.acquire(True))
