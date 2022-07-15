@@ -1,4 +1,3 @@
-import aiohttp
 import asyncio
 import base64
 import hashlib
@@ -6,9 +5,11 @@ import json
 import random
 import time
 import urllib.parse
+from typing import Optional
+
+import aiohttp
 from Crypto.Cipher import PKCS1_v1_5
 from Crypto.PublicKey import RSA
-from typing import Optional
 
 
 class BiliAuth:
@@ -70,7 +71,7 @@ class BiliAuth:
             "access_key": "",
             "actionKey": "appkey",
             "appkey": "783bbb7264451d82",
-            "build": "6590300",
+            "build": "6600300",
             "channel": "bili",
             "device": "phone",
             "mobi_app": "android",
@@ -104,7 +105,7 @@ class BiliAuth:
             "Accept-Encoding": "gzip",
             "Accept-Language": "zh-cn",
             "Connection": "keep-alive",
-            "User-Agent": "Mozilla/5.0 BiliDroid/6.59.0 (bbcalllen@gmail.com) os/android model/MuMu mobi_app/android build/6590300 channel/bili innerVer/6590300 osVer/7.1.2 network/2",
+            "User-Agent": "Mozilla/5.0 BiliDroid/6.60.0 (bbcalllen@gmail.com) os/android model/MuMu mobi_app/android build/6600300 channel/bili innerVer/6600300 osVer/7.1.2 network/2",
         }
         payload = {
             "captcha": "",
@@ -158,16 +159,21 @@ class BiliAuth:
         after_login = await self.account_login()
         keys_lib = self.reformat_keys(after_login)
         if fallback_sms and str(keys_lib["code"]) != "0":
+            print("账密登录失败, {}, 尝试短信验证码登录...".format(keys_lib["message"]))
             keys_lib = self.reformat_keys(await self.login_sms())
         if is_print:
-            print(keys_lib)
+            print(keys_lib["access_token"])
+            print(keys_lib["refresh_token"])
+            print(keys_lib["cookies"])
         return keys_lib
 
     async def acquire_by_sms(self, is_print=False) -> dict:
         after_login = await self.login_sms()
         keys_lib = self.reformat_keys(after_login)
         if is_print:
-            print(keys_lib)
+            print(keys_lib["access_token"])
+            print(keys_lib["refresh_token"])
+            print(keys_lib["cookies"])
         return keys_lib
 
     async def login_sms(self, is_print=False):
@@ -181,7 +187,7 @@ class BiliAuth:
             "Accept-Encoding": "gzip",
             "Accept-Language": "zh-cn",
             "Connection": "keep-alive",
-            "User-Agent": "Mozilla/5.0 BiliDroid/6.59.0 (bbcalllen@gmail.com) os/android model/MuMu mobi_app/android build/6590300 channel/bili innerVer/6590300 osVer/7.1.2 network/2",
+            "User-Agent": "Mozilla/5.0 BiliDroid/6.60.0 (bbcalllen@gmail.com) os/android model/MuMu mobi_app/android build/6600300 channel/bili innerVer/6600300 osVer/7.1.2 network/2",
         }
         payload = {
             "captcha_key": raw_payload["captcha_key"],
@@ -201,7 +207,7 @@ class BiliAuth:
     async def send_sms(self):
         if self.buvid is None:
             self.buvid = self.fake_buvid()
-        url = "https://passport.bilibili.com//x/passport-login/sms/send"
+        url = "https://passport.bilibili.com/x/passport-login/sms/send"
         headers = {
             "env": "prod",
             "APP-KEY": "android",
@@ -210,7 +216,7 @@ class BiliAuth:
             "Accept-Encoding": "gzip",
             "Accept-Language": "zh-cn",
             "Connection": "keep-alive",
-            "User-Agent": "Mozilla/5.0 BiliDroid/6.59.0 (bbcalllen@gmail.com) os/android model/MuMu mobi_app/android build/6590300 channel/bili innerVer/6590300 osVer/7.1.2 network/2",
+            "User-Agent": "Mozilla/5.0 BiliDroid/6.60.0 (bbcalllen@gmail.com) os/android model/MuMu mobi_app/android build/6600300 channel/bili innerVer/6600300 osVer/7.1.2 network/2",
         }
         payload = {
             "cid": "86",
@@ -226,7 +232,13 @@ class BiliAuth:
 
 
 if __name__ == '__main__':
+    u = input("请输入手机号: ")
+    m = int(input("请输入登录模式 (1为短信验证码登录, 2为账号密码登录): "))
+    p = ""
+    if m == 2:
+        p = input("请输入密码: ")
     auth = BiliAuth()
-    auth.set("username", "password")
+    auth.set(u, p)
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(auth.acquire(True))
+    loop.run_until_complete(auth.acquire(is_print=True, fallback_sms=True))
+    input("按任意键退出...")
