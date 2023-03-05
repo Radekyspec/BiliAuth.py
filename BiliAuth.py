@@ -2,9 +2,9 @@ import asyncio
 import base64
 import hashlib
 import json
-import random
 import time
 import urllib.parse
+from copy import deepcopy
 from typing import Optional
 
 import aiohttp
@@ -16,11 +16,24 @@ class BiliAuth:
     def __init__(self):
         self.username = None
         self.password = None
-        self.buvid = None
+        self.region = None
+        self.buvid = "XZ686A469231BE4F88E7CB07AE269E3BF4792"
+        self.headers = {
+            "env": "prod",
+            "app-key": "android64",
+            "Buvid": self.buvid,
+            "Accept": "*/*",
+            "Accept-Encoding": "gzip",
+            "Accept-Language": "zh-cn",
+            "Connection": "keep-alive",
+            "User-Agent": "Mozilla/5.0 BiliDroid/7.16.0 (bbcallen@gmail.com) os/android model/ASUS_Z01QD "
+                          "mobi_app/android build/7160300 channel/bili innerVer/7160310 osVer/6.0.1 network/2",
+        }
 
-    def set(self, username, password):
+    def set(self, username, password, region):
         self.username = username
         self.password = password
+        self.region = region
 
     async def post(self, url: str, headers: Optional[dict] = None, payload: Optional[dict] = None):
         async with aiohttp.ClientSession(headers=headers) as session:
@@ -53,60 +66,42 @@ class BiliAuth:
         enc_pass = str(base64.b64encode(cipher.encrypt(raw_pass.encode("utf-8"))), "utf-8")
         return enc_pass
 
-    def fake_buvid(self):
-        mac_list = []
-        for i in range(1, 7):
-            rand_str = "".join(random.sample("0123456789abcdef", 2))
-            mac_list.append(rand_str)
-        rand_mac = ":".join(mac_list)
-        md5 = hashlib.md5()
-        md5.update(rand_mac.encode())
-        md5_mac_str = md5.hexdigest()
-        md5_mac = list(md5_mac_str)
-        fake_mac = ("XY" + md5_mac[2] + md5_mac[12] + md5_mac[22] + md5_mac_str).upper()
-        return fake_mac
-
-    def payload_sign(self, payload):
+    @staticmethod
+    def payload_sign(payload):
+        """Create and return a new payload dict with default params.
+        """
         default = {
             "access_key": "",
-            "actionKey": "appkey",
             "appkey": "783bbb7264451d82",
-            "build": "6600300",
+            "build": "7160300",
             "channel": "bili",
             "device": "phone",
             "mobi_app": "android",
             "platform": "android",
-            "ts": str(time.time()).split(".")[0],
+            "c_locale": "zh_CN",
+            "s_locale": "zh_CN",
+            "statistics": '{"appId":1,"platform":3,"version":"7.16.0","abtest":""}',
+            "disable_rcmd": "0",
+            "ts": int(time.time()),
         }
-        raw_payload = {**payload, **default}
-        raw_payload_keys = sorted(raw_payload.keys())
+        r_payload = {**payload, **default}
+        payload_keys = sorted(r_payload)
         payload = {}
-        for i in raw_payload_keys:
-            payload.update({i: raw_payload[i]})
+        [payload.update({i: r_payload[i]}) for i in payload_keys]
         return payload
 
-    def app_sign(self, payload):
+    @staticmethod
+    def app_sign(payload) -> None:
         # app_secret = str(base64.b64decode("MjY1MzU4M2M4ODczZGVhMjY4YWI5Mzg2OTE4YjFkNjU=".encode("utf-8")), "utf-8")
         app_secret = "2653583c8873dea268ab9386918b1d65"
         query = urllib.parse.urlencode(payload)
         md5 = hashlib.md5()
         md5.update((query + app_secret).encode())
         sign = md5.hexdigest()
-        return sign
+        payload.update({"sign": sign})
 
     async def account_login(self):
-        self.buvid = self.fake_buvid()
         url = "https://passport.bilibili.com/x/passport-login/oauth2/login"
-        headers = {
-            "env": "prod",
-            "APP-KEY": "android",
-            "Buvid": self.buvid,
-            "Accept": "*/*",
-            "Accept-Encoding": "gzip",
-            "Accept-Language": "zh-cn",
-            "Connection": "keep-alive",
-            "User-Agent": "Mozilla/5.0 BiliDroid/6.60.0 (bbcalllen@gmail.com) os/android model/MuMu mobi_app/android build/6600300 channel/bili innerVer/6600300 osVer/7.1.2 network/2",
-        }
         payload = {
             "captcha": "",
             "challenge": "",
@@ -119,13 +114,19 @@ class BiliAuth:
             "validate": ""
         }
         payload = self.payload_sign(payload)
-        sign = self.app_sign(payload)
-        payload.update({"sign": sign})
-        resp = await self.post(url, headers, payload)
+        self.app_sign(payload)
+        resp = await self.post(url, self.headers, payload)
         return resp
 
-    def reformat_keys(self, after_login):
-        if after_login["data"] and after_login["data"]["status"] == 0:
+    @staticmethod
+    def reformat_keys(after_login):
+        default = {
+            "code": -404,
+            "message": after_login
+        }
+        if "data" not in after_login or not isinstance(after_login["data"], dict):
+            return default
+        if (status := after_login["data"].get("status", None)) == 0:
             cookie_info = after_login["data"]["cookie_info"]["cookies"]
             cookies = ""
             for cookie in cookie_info:
@@ -139,7 +140,7 @@ class BiliAuth:
                 "cookies": cookies
             }
             return keys_lib
-        elif after_login["data"] and after_login["data"]["status"] == 2:
+        elif status == 2:
             # 需要验证手机
             keys_lib = {
                 "code": 2,
@@ -150,45 +151,47 @@ class BiliAuth:
         elif after_login["code"] == -629:
             # 用户名或密码错误
             keys_lib = {
-                "code": after_login["code"],
+                "code": -629,
                 "message": after_login["message"]
             }
             return keys_lib
+        return default
+
+    def is_ready(self) -> bool:
+        return self.username is not None and self.password is not None and self.region is not None
 
     async def acquire(self, is_print=False, fallback_sms=False) -> dict:
+        if not self.is_ready():
+            print("未设置手机号/密码/国家代码")
+            return {}
         after_login = await self.account_login()
         keys_lib = self.reformat_keys(after_login)
-        if fallback_sms and str(keys_lib["code"]) != "0":
-            print("账密登录失败, {}, 尝试短信验证码登录...".format(keys_lib["message"]))
-            keys_lib = self.reformat_keys(await self.login_sms())
-        if is_print:
-            print(keys_lib["access_token"])
-            print(keys_lib["refresh_token"])
-            print(keys_lib["cookies"])
+        if keys_lib["code"] != 0:
+            print("账密登录失败, {}".format(keys_lib["message"]))
+            if fallback_sms:
+                print("尝试短信验证码登录...")
+                keys_lib = self.reformat_keys(await self.login_sms())
+        elif is_print:
+            print("access_token:", keys_lib["access_token"])
+            print("refresh_token:", keys_lib["refresh_token"])
+            print("cookies:", keys_lib["cookies"])
         return keys_lib
 
     async def acquire_by_sms(self, is_print=False) -> dict:
+        if not self.is_ready():
+            print("未设置手机号/密码/国家代码")
+            return {}
         after_login = await self.login_sms()
         keys_lib = self.reformat_keys(after_login)
         if is_print:
-            print(keys_lib["access_token"])
-            print(keys_lib["refresh_token"])
-            print(keys_lib["cookies"])
+            print("access_token:", keys_lib["access_token"])
+            print("refresh_token:", keys_lib["refresh_token"])
+            print("cookies:", keys_lib["cookies"])
         return keys_lib
 
     async def login_sms(self, is_print=False):
         raw_payload = await self.send_sms()
         url = "https://passport.bilibili.com/x/passport-login/login/sms"
-        headers = {
-            "env": "prod",
-            "APP-KEY": "android",
-            "Buvid": self.buvid,
-            "Accept": "*/*",
-            "Accept-Encoding": "gzip",
-            "Accept-Language": "zh-cn",
-            "Connection": "keep-alive",
-            "User-Agent": "Mozilla/5.0 BiliDroid/6.60.0 (bbcalllen@gmail.com) os/android model/MuMu mobi_app/android build/6600300 channel/bili innerVer/6600300 osVer/7.1.2 network/2",
-        }
         payload = {
             "captcha_key": raw_payload["captcha_key"],
             "cid": raw_payload["cid"],
@@ -197,48 +200,62 @@ class BiliAuth:
             "code": input("请输入收到的短信验证码: "),
         }
         payload = self.payload_sign(payload)
-        sign = self.app_sign(payload)
-        payload.update({"sign": sign})
-        resp = await self.post(url, headers, payload)
+        self.app_sign(payload)
+        resp = await self.post(url, self.headers, payload)
         if is_print:
             print(resp)
         return resp
 
     async def send_sms(self):
-        if self.buvid is None:
-            self.buvid = self.fake_buvid()
         url = "https://passport.bilibili.com/x/passport-login/sms/send"
-        headers = {
-            "env": "prod",
-            "APP-KEY": "android",
-            "Buvid": self.buvid,
-            "Accept": "*/*",
-            "Accept-Encoding": "gzip",
-            "Accept-Language": "zh-cn",
-            "Connection": "keep-alive",
-            "User-Agent": "Mozilla/5.0 BiliDroid/6.60.0 (bbcalllen@gmail.com) os/android model/MuMu mobi_app/android build/6600300 channel/bili innerVer/6600300 osVer/7.1.2 network/2",
-        }
         payload = {
             "cid": "86",
             "tel": self.username,
-            "statistics": '{"appId":1,"platform":3,"version":"6.32.0","abtest":""}'
         }
-        payload = self.payload_sign(payload)
-        sign = self.app_sign(payload)
-        payload.update({"sign": sign})
-        resp = await self.post(url, headers, payload)
+        t_payload = self.payload_sign(payload)
+        self.app_sign(t_payload)
+        resp = await self.post(url, self.headers, t_payload)
+        while not resp["data"]["captcha_key"]:
+            t_payload = deepcopy(payload)
+            recaptcha = (list(filter(lambda x: x.startswith("recaptcha_token"),
+                                     resp["data"]["recaptcha_url"].split("&")))[0]).split("=")[1]
+            gt = (list(filter(lambda x: x.startswith("gee_gt"),
+                              resp["data"]["recaptcha_url"].split("&")))[0]).split("=")[1]
+            challenge = (list(filter(lambda x: x.startswith("gee_challenge"),
+                              resp["data"]["recaptcha_url"].split("&")))[0]).split("=")[1]
+            t_payload["recaptcha_token"] = recaptcha
+            challenge, validate = await self.pass_captcha(gt, challenge)
+            t_payload["gee_challenge"] = challenge
+            t_payload["gee_validate"] = validate
+            t_payload["gee_seccode"] = t_payload["gee_validate"] + "|jordan"
+            t_payload = self.payload_sign(t_payload)
+            self.app_sign(t_payload)
+            resp = await self.post(url, self.headers, t_payload)
+            print(resp)
         payload["captcha_key"] = resp["data"]["captcha_key"]
         return payload
 
+    async def pass_captcha(self, gt, challenge):
+        resp = await self.post("http://www.damagou.top/apiv1/jiyanRecognize.html",
+                               self.headers,
+                               {
+                                   "userkey": "b39d890ef3e1da0d52a5453d3465cf84",
+                                   "gt": gt,
+                                   "challenge": challenge,
+                                   "isJson": "2"
+                               })
+        c_and_v = resp["data"].split("|")
+        if len(c_and_v) != 2:
+            return await self.pass_captcha(gt, challenge)
+        return tuple(c_and_v)
+
 
 if __name__ == '__main__':
-    u = input("请输入手机号: ")
-    m = int(input("请输入登录模式 (1为短信验证码登录, 2为账号密码登录): "))
-    p = ""
-    if m == 2:
-        p = input("请输入密码: ")
+    u = 15078863008
+    p = "HELLOaaa20031227"
+    r = "86"
     auth = BiliAuth()
-    auth.set(u, p)
+    auth.set(u, p, r)
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(auth.acquire(is_print=True, fallback_sms=True))
+    loop.run_until_complete(auth.acquire(is_print=True))
     input("按任意键退出...")
