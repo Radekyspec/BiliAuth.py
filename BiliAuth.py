@@ -31,16 +31,18 @@ class BiliAuth:
         }
 
     def set(self, username, password, region):
-        self.username = username
-        self.password = password
-        self.region = region
+        self.username = str(username)
+        self.password = str(password)
+        self.region = str(region)
 
     async def post(self, url: str, headers: Optional[dict] = None, payload: Optional[dict] = None):
         async with aiohttp.ClientSession(headers=headers) as session:
             async with session.post(url, data=payload) as resp:
                 resp = await resp.text()
-                resp = json.loads(resp)
-        await session.close()
+                try:
+                    resp = json.loads(resp)
+                except json.JSONDecodeError:
+                    raise RuntimeError("JSON解析失败, 请重试, {}".format(resp))
         return resp
 
     async def get(self, url: str, headers: Optional[dict] = None, payload: Optional[dict] = None):
@@ -48,7 +50,6 @@ class BiliAuth:
             async with session.get(url, params=payload) as resp:
                 resp = await resp.text()
                 resp = json.loads(resp)
-        await session.close()
         return resp
 
     async def get_public_key(self):
@@ -85,9 +86,7 @@ class BiliAuth:
             "ts": int(time.time()),
         }
         r_payload = {**payload, **default}
-        payload_keys = sorted(r_payload)
-        payload = {}
-        [payload.update({i: r_payload[i]}) for i in payload_keys]
+        payload = {i: r_payload[i] for i in sorted(r_payload)}
         return payload
 
     @staticmethod
@@ -120,13 +119,22 @@ class BiliAuth:
 
     @staticmethod
     def reformat_keys(after_login):
+        print(after_login)
         default = {
-            "code": -404,
+            "code": -403,
             "message": after_login
         }
-        if "data" not in after_login or not isinstance(after_login["data"], dict):
-            return default
-        if (status := after_login["data"].get("status", None)) == 0:
+        code = after_login.get("code", None)
+        if code == 0:
+            status = after_login["data"].get("status", None)
+            if status == 2:
+                # 需要验证手机
+                keys_lib = {
+                    "code": 2,
+                    "message": after_login["data"]["message"],
+                    "url": after_login["data"]["url"]
+                }
+                return keys_lib
             cookie_info = after_login["data"]["cookie_info"]["cookies"]
             cookies = ""
             for cookie in cookie_info:
@@ -140,15 +148,7 @@ class BiliAuth:
                 "cookies": cookies
             }
             return keys_lib
-        elif status == 2:
-            # 需要验证手机
-            keys_lib = {
-                "code": 2,
-                "message": after_login["data"]["message"],
-                "url": after_login["data"]["url"]
-            }
-            return keys_lib
-        elif after_login["code"] == -629:
+        elif code == -629:
             # 用户名或密码错误
             keys_lib = {
                 "code": -629,
@@ -158,26 +158,29 @@ class BiliAuth:
         return default
 
     def is_ready(self) -> bool:
-        return self.username is not None and self.password is not None and self.region is not None
+        if self.username and self.password and self.region:
+            return True
+        return False
 
-    async def acquire(self, is_print=False, fallback_sms=False) -> dict:
+    async def acquire(self, is_print=False, fallback_sms=False):
         if not self.is_ready():
             print("未设置手机号/密码/国家代码")
-            return {}
+            return
         after_login = await self.account_login()
         keys_lib = self.reformat_keys(after_login)
         if keys_lib["code"] != 0:
             print("账密登录失败, {}".format(keys_lib["message"]))
             if fallback_sms:
                 print("尝试短信验证码登录...")
-                keys_lib = self.reformat_keys(await self.login_sms())
-        elif is_print:
+                await self.acquire_by_sms(is_print=is_print)
+            return
+        if is_print:
             print("access_token:", keys_lib["access_token"])
             print("refresh_token:", keys_lib["refresh_token"])
             print("cookies:", keys_lib["cookies"])
         return keys_lib
 
-    async def acquire_by_sms(self, is_print=False) -> dict:
+    async def acquire_by_sms(self, is_print=False):
         if not self.is_ready():
             print("未设置手机号/密码/国家代码")
             return {}
@@ -187,7 +190,6 @@ class BiliAuth:
             print("access_token:", keys_lib["access_token"])
             print("refresh_token:", keys_lib["refresh_token"])
             print("cookies:", keys_lib["cookies"])
-        return keys_lib
 
     async def login_sms(self, is_print=False):
         raw_payload = await self.send_sms()
@@ -209,12 +211,13 @@ class BiliAuth:
     async def send_sms(self):
         url = "https://passport.bilibili.com/x/passport-login/sms/send"
         payload = {
-            "cid": "86",
+            "cid": self.region,
             "tel": self.username,
         }
         t_payload = self.payload_sign(payload)
         self.app_sign(t_payload)
         resp = await self.post(url, self.headers, t_payload)
+        print(resp)
         while not resp["data"]["captcha_key"]:
             t_payload = deepcopy(payload)
             recaptcha = (list(filter(lambda x: x.startswith("recaptcha_token"),
@@ -224,18 +227,19 @@ class BiliAuth:
             challenge = (list(filter(lambda x: x.startswith("gee_challenge"),
                               resp["data"]["recaptcha_url"].split("&")))[0]).split("=")[1]
             t_payload["recaptcha_token"] = recaptcha
-            challenge, validate = await self.pass_captcha(gt, challenge)
+            challenge, validate = await self.pass_captcha(gt, challenge, 0)
             t_payload["gee_challenge"] = challenge
             t_payload["gee_validate"] = validate
             t_payload["gee_seccode"] = t_payload["gee_validate"] + "|jordan"
             t_payload = self.payload_sign(t_payload)
             self.app_sign(t_payload)
             resp = await self.post(url, self.headers, t_payload)
-            print(resp)
-        payload["captcha_key"] = resp["data"]["captcha_key"]
-        return payload
+        t_payload["captcha_key"] = resp["data"]["captcha_key"]
+        return t_payload
 
-    async def pass_captcha(self, gt, challenge):
+    async def pass_captcha(self, gt, challenge, retries):
+        if retries > 10:
+            raise RuntimeError("验证码识别失败")
         resp = await self.post("http://www.damagou.top/apiv1/jiyanRecognize.html",
                                self.headers,
                                {
@@ -244,18 +248,22 @@ class BiliAuth:
                                    "challenge": challenge,
                                    "isJson": "2"
                                })
+        print(resp)
+        retries += 1
+        if "status" not in resp or resp["status"] != "0":
+            return await self.pass_captcha(gt, challenge, retries)
         c_and_v = resp["data"].split("|")
         if len(c_and_v) != 2:
-            return await self.pass_captcha(gt, challenge)
+            return await self.pass_captcha(gt, challenge, retries)
         return tuple(c_and_v)
 
 
 if __name__ == '__main__':
-    u = 15078863008
-    p = "HELLOaaa20031227"
-    r = "86"
+    u = ""  # 在这里填写手机号
+    p = ""  # 在这里填写密码
+    r = ""  # 在这里填写手机号所在的国家代码
     auth = BiliAuth()
     auth.set(u, p, r)
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(auth.acquire(is_print=True))
+    loop.run_until_complete(auth.acquire(is_print=True, fallback_sms=True))
     input("按任意键退出...")
